@@ -9,8 +9,7 @@ from sklearn.decomposition import PCA
 DEFAULT_BASE_COLS = [
     'GRAPROES','GRAPROES_F','GRAPROES_M','RECUCALL_C','RAMPAS_C','PASOPEAT_C',
     'BANQUETA_C','GUARNICI_C','CICLOVIA_C','CICLOCAR_C','ALUMPUB_C','LETRERO_C',
-    'TELPUB_C','ARBOLES_C','DRENAJEP_C','TRANSCOL_C','ACESOPER_C','ACESOAUT_C',
-    'PUESSEMI_C','PUESAMBU_C'
+    'TELPUB_C','ARBOLES_C','DRENAJEP_C','TRANSCOL_C','ACESOPER_C','ACESOAUT_C'
 ]
 
 DEFAULT_INTERV_MAP = {
@@ -29,8 +28,7 @@ DEFAULT_INTERV_MAP = {
     'TELPUB_C':'Street furniture / telecom',
     'ACESOPER_C':'Senderos operativos / servidumbres',
     'ACESOAUT_C':'Gestión de acceso vehicular',
-    'PUESSEMI_C':'Ordenamiento de puestos semifijos',
-    'PUESAMBU_C':'Mercado de barrio / ambulantaje',
+
 }
 
 class PCARecommender:
