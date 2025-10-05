@@ -1,0 +1,102 @@
+name: Build and deploy to ECS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Prepare and register ECS task definition
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_LOG_GROUP: ${{ secrets.AWS_LOG_GROUP }}
+          EXECUTION_ROLE_ARN: ${{ secrets.ECS_EXECUTION_ROLE_ARN }}
+          TASK_ROLE_ARN: ${{ secrets.ECS_TASK_ROLE_ARN }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "Using image: $IMAGE_URI"
+
+          if [ -z "$EXECUTION_ROLE_ARN" ]; then
+            echo "ECS_EXECUTION_ROLE_ARN secret is required" >&2
+            exit 1
+          fi
+
+          if [ -z "$AWS_LOG_GROUP" ]; then
+            echo "AWS_LOG_GROUP secret is required" >&2
+            exit 1
+          fi
+
+          # Allow TASK_ROLE_ARN to be optional; if missing, reuse execution role.
+          if [ -z "$TASK_ROLE_ARN" ]; then
+            echo "ECS_TASK_ROLE_ARN not provided, defaulting to execution role"
+            TASK_ROLE_ARN="$EXECUTION_ROLE_ARN"
+          fi
+
+          # Replace placeholder image and set awslogs configuration using jq
+          jq --arg img "$IMAGE_URI" --arg region "$AWS_REGION" --arg loggroup "$AWS_LOG_GROUP" \
+            --arg execrole "$EXECUTION_ROLE_ARN" --arg taskrole "$TASK_ROLE_ARN" \
+            '.containerDefinitions[0].image = $img |
+             .containerDefinitions[0].logConfiguration = {"logDriver":"awslogs","options":{"awslogs-group":$loggroup,"awslogs-region":$region,"awslogs-stream-prefix":"pcarecommender"}} |
+             .executionRoleArn = $execrole |
+             .taskRoleArn = $taskrole' \
+            ecs-task-def.json > ecs-task-def-registered.json
+
+          echo "Registering task definition..."
+          aws ecs register-task-definition --cli-input-json file://ecs-task-def-registered.json > registered.json
+          cat registered.json
+          TASK_DEF_ARN=$(jq -r '.taskDefinition.taskDefinitionArn' registered.json)
+          echo "Registered task definition ARN: $TASK_DEF_ARN"
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: Update ECS service to use new task definition
+        env:
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+        run: |
+          echo "Updating service $ECS_SERVICE on cluster $ECS_CLUSTER"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEF_ARN"
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Cleanup local images
+        run: |
+          docker image prune -f
+
+# Notes:
+# - This workflow expects an `ecs-task-def.json` file at the repo root or you can generate
+#   it dynamically in the workflow; alternatively create a task definition in the AWS Console
+#   and use the `register-task-definition` CLI action instead.
+# - Required repository secrets:
+#   - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+#   - ECR_REPOSITORY (name of the ECR repo, e.g. pcarecommender)
+#   - ECS_CLUSTER, ECS_SERVICE
